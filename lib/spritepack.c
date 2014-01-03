@@ -1,5 +1,6 @@
 #include "spritepack.h"
 #include "matrix.h"
+#include "shader.h"
 
 #include <lua.h>
 #include <lauxlib.h>
@@ -98,7 +99,7 @@ import_color(struct import_stream *is) {
 static void
 import_picture(struct import_stream *is) {
 	int n = import_byte(is);
-	struct pack_picture * pp = ialloc(is->alloc, sizeof(*pp) + (n-1) * sizeof(struct pack_quad));
+	struct pack_picture * pp = (struct pack_picture *)ialloc(is->alloc, sizeof(*pp) + (n - 1) * sizeof(struct pack_quad));
 	pp->n = n;
 	int i,j;
 	for (i=0;i<n;i++) {
@@ -117,7 +118,7 @@ import_picture(struct import_stream *is) {
 static void
 import_polygon(struct import_stream *is) {
 	int n = import_byte(is);
-	struct pack_polygon * pp = ialloc(is->alloc, sizeof(*pp) + (n-1) * sizeof(struct pack_poly));
+	struct pack_polygon * pp = (struct pack_polygon *)ialloc(is->alloc, sizeof(*pp) + (n - 1) * sizeof(struct pack_poly));
 	pp->n = n;
 	int i,j;
 	for (i=0;i<n;i++) {
@@ -125,8 +126,8 @@ import_polygon(struct import_stream *is) {
 		int texid = import_byte(is);
 		p->texid = is->pack->tex[texid];
 		p->n = import_byte(is);
-		p->texture_coord = ialloc(is->alloc, p->n * 2 * sizeof(uint16_t));
-		p->screen_coord =  ialloc(is->alloc, p->n * 2 * sizeof(uint32_t));
+		p->texture_coord = (uint16_t *)ialloc(is->alloc, p->n * 2 * sizeof(uint16_t));
+		p->screen_coord = (int32_t *)ialloc(is->alloc, p->n * 2 * sizeof(uint32_t));
 		for (j=0;j<p->n*2;j++) {
 			p->texture_coord[j] = import_word(is);
 		}
@@ -145,7 +146,7 @@ import_string(struct import_stream *is) {
 	if (is->size < n) {
 		luaL_error(is->alloc->L, "Invalid stream (%d): read string failed", is->current_id);
 	}
-	char * buf = ialloc(is->alloc, (n+1+3) & ~3);
+	char * buf = (char *)ialloc(is->alloc, (n+1+3) & ~3);
 	memcpy(buf, is->stream, n);
 	buf[n] = 0;
 	is->stream += n;
@@ -158,7 +159,7 @@ static void
 import_frame(struct pack_frame * pf, struct import_stream *is, int maxc) {
 	int n = import_byte(is);
 	int i;
-	pf->part = ialloc(is->alloc, n * sizeof(struct pack_part));
+	pf->part = (struct pack_part *)ialloc(is->alloc, n * sizeof(struct pack_part));
 	pf->n = n;
 	for (i=0;i<n;i++) {
 		struct pack_part *pp = &pf->part[i];
@@ -172,7 +173,7 @@ import_frame(struct pack_frame * pf, struct import_stream *is, int maxc) {
 			luaL_error(is->alloc->L, "Invalid stream (%d): frame part need an id", is->current_id);
 		}
 		if (tag & TAG_MATRIX) {
-			pp->t.mat = ialloc(is->alloc, sizeof(struct matrix));
+			pp->t.mat = (struct matrix *)ialloc(is->alloc, sizeof(struct matrix));
 			int32_t *m = pp->t.mat->m;
 			int j;
 			for (j=0;j<6;j++) {
@@ -191,13 +192,15 @@ import_frame(struct pack_frame * pf, struct import_stream *is, int maxc) {
 		} else {
 			pp->t.additive = 0;
 		}
+		// todo: support other program
+		pp->t.program = PROGRAM_DEFAULT;
 	}
 }
 
 static void
 import_animation(struct import_stream *is) {
 	int component = import_word(is);
-	struct pack_animation * pa = ialloc(is->alloc, sizeof(*pa) + (component-1) * sizeof(struct pack_component));
+	struct pack_animation * pa = (struct pack_animation *)ialloc(is->alloc, sizeof(*pa) + (component - 1) * sizeof(struct pack_component));
 	pa->component_number = component;
 	int i;
 	for (i=0;i<component;i++) {
@@ -209,7 +212,7 @@ import_animation(struct import_stream *is) {
 		pa->component[i].name = import_string(is);
 	}
 	pa->action_number = import_word(is);
-	pa->action = ialloc(is->alloc, sizeof(struct pack_action) * pa->action_number);
+	pa->action = (struct pack_action *)ialloc(is->alloc, sizeof(struct pack_action) * pa->action_number);
 	int frame = 0;
 	for (i=0;i<pa->action_number;i++) {
 		pa->action[i].name = import_string(is);
@@ -218,7 +221,7 @@ import_animation(struct import_stream *is) {
 		frame += pa->action[i].number;
 	}
 	pa->frame_number = import_word(is);
-	pa->frame = ialloc(is->alloc, sizeof(struct pack_frame) * pa->frame_number);
+	pa->frame = (struct pack_frame *)ialloc(is->alloc, sizeof(struct pack_frame) * pa->frame_number);
 	for (i=0;i<pa->frame_number;i++) {
 		import_frame(&pa->frame[i], is, component);
 	}
@@ -226,12 +229,20 @@ import_animation(struct import_stream *is) {
 
 static void
 import_label(struct import_stream *is) {
-	struct pack_label * pl = ialloc(is->alloc, sizeof(struct pack_label));
+	struct pack_label * pl = (struct pack_label *)ialloc(is->alloc, sizeof(struct pack_label));
 	pl->align = import_byte(is);
 	pl->color = import_color(is);
 	pl->size = import_word(is);
 	pl->width = import_word(is);
 	pl->height = import_word(is);
+}
+
+static void
+import_pannel(struct import_stream *is) {
+	struct pack_pannel *pp = (struct pack_pannel *)ialloc(is->alloc, sizeof(struct pack_pannel));
+	pp->width = import_int32(is);
+	pp->height = import_int32(is);
+	pp->scissor = import_byte(is);
 }
 
 static void
@@ -260,6 +271,9 @@ import_sprite(struct import_stream *is) {
 	case TYPE_LABEL:
 		import_label(is);
 		break;
+	case TYPE_PANNEL:
+		import_pannel(is);
+		break;
 	default:
 		luaL_error(is->alloc->L, "Invalid stream : Unknown type %d, id=%d", type, id);
 		break;
@@ -276,8 +290,8 @@ import_sprite(struct import_stream *is) {
  */
 static int
 limport(lua_State *L) {
-	int max_id = luaL_checkinteger(L, 2); 
-	int size = luaL_checkinteger(L, 3);
+	int max_id = (int)luaL_checkinteger(L, 2); 
+	int size = (int)luaL_checkinteger(L, 3);
 	int tex;
 	int tt = lua_type(L,1);
 	if (tt == LUA_TNUMBER) {
@@ -292,26 +306,26 @@ limport(lua_State *L) {
 
 	struct import_alloc alloc;
 	alloc.L = L;
-	alloc.buffer = lua_newuserdata(L, size);
+	alloc.buffer = (char *)lua_newuserdata(L, size);
 	alloc.cap = size;
 
-	struct sprite_pack *pack = ialloc(&alloc, sizeof(*pack) + (tex-1) * sizeof(int));
+	struct sprite_pack *pack = (struct sprite_pack *)ialloc(&alloc, sizeof(*pack) + (tex - 1) * sizeof(int));
 	pack->n = max_id + 1;
 	int align_n = (pack->n + 3) & ~3;
-	pack->type = ialloc(&alloc, align_n * sizeof(uint8_t));
+	pack->type = (uint8_t *)ialloc(&alloc, align_n * sizeof(uint8_t));
 	memset(pack->type, 0, align_n * sizeof(uint8_t));
-	pack->data = ialloc(&alloc, pack->n * sizeof(void*));
+	pack->data = (void **)ialloc(&alloc, pack->n * sizeof(void*));
 	memset(pack->data, 0, pack->n * sizeof(void*));
 
 	if (lua_istable(L,1)) {
 		int i;
 		for (i=0; i<tex; i++) {
 			lua_rawgeti(L,1,i+1);
-			pack->tex[i] = luaL_checkinteger(L, -1);
+			pack->tex[i] = (int)luaL_checkinteger(L, -1);
 			lua_pop(L,1);
 		}
 	} else {
-		pack->tex[0] = lua_tointeger(L,1);
+		pack->tex[0] = (int)lua_tointeger(L,1);
 	}
 
 	struct import_stream is;
@@ -329,7 +343,7 @@ limport(lua_State *L) {
 
 static int
 lpackbyte(lua_State *L) {
-	int n = luaL_checkinteger(L, 1);
+	int n = (int)luaL_checkinteger(L, 1);
 	if (n < 0 || n > 255) {
 		return luaL_error(L, "pack byte %d", n);
 	}
@@ -340,7 +354,7 @@ lpackbyte(lua_State *L) {
 
 static int
 lpackword(lua_State *L) {
-	int n = luaL_checkinteger(L, 1);
+	int n = (int)luaL_checkinteger(L, 1);
 	if (n < 0 || n > 0xffff) {
 		return luaL_error(L, "pack word %d", n);
 	}
@@ -354,7 +368,7 @@ lpackword(lua_State *L) {
 
 static int
 lpackint32(lua_State *L) {
-	int32_t sn = luaL_checkinteger(L, 1);
+	int32_t sn = (int32_t)luaL_checkinteger(L, 1);
 	uint32_t n = (uint32_t) sn;
 	uint8_t buf[4] = { 
 		(uint8_t)n&0xff , 
@@ -430,7 +444,7 @@ lpackframetag(lua_State *L) {
 
 static int
 lpicture_size(lua_State *L) {
-	int n = luaL_checkinteger(L,1);
+	int n = (int)luaL_checkinteger(L,1);
 	int sz = sizeof(struct pack_picture) + (n - 1) * sizeof(struct pack_quad);
 	lua_pushinteger(L, sz);
 	return 1;
@@ -438,8 +452,8 @@ lpicture_size(lua_State *L) {
 
 static int
 lpolygon_size(lua_State *L) {
-	int n = luaL_checkinteger(L,1);
-	int pn = luaL_checkinteger(L,2);
+	int n = (int)luaL_checkinteger(L,1);
+	int pn = (int)luaL_checkinteger(L,2);
 	int sz = sizeof(struct pack_polygon) 
 		+ (n-1) * sizeof(struct pack_poly)
 		+ 12 * pn;
@@ -449,8 +463,8 @@ lpolygon_size(lua_State *L) {
 
 static int
 lpack_size(lua_State *L) {
-	int max_id = luaL_checkinteger(L,1);
-	int tex = luaL_checkinteger(L,2);
+	int max_id = (int)luaL_checkinteger(L,1);
+	int tex = (int)luaL_checkinteger(L,2);
 	int align_n = (max_id + 1 + 3) & ~3;
 	int size = sizeof(struct sprite_pack) 
 		+ align_n * sizeof(uint8_t) 
@@ -471,9 +485,9 @@ lpack_size(lua_State *L) {
  */
 static int
 lanimation_size(lua_State *L) {
-	int frame = luaL_checkinteger(L,1);
-	int component = luaL_checkinteger(L,2);
-	int action = luaL_checkinteger(L,3);
+	int frame = (int)luaL_checkinteger(L,1);
+	int component = (int)luaL_checkinteger(L,2);
+	int action = (int)luaL_checkinteger(L,3);
 
 	int size = sizeof(struct pack_animation) 
 		+ frame * sizeof(struct pack_frame)
@@ -517,6 +531,12 @@ llabel_size(lua_State *L) {
 	return 1;
 }
 
+static int
+lpannel_size(lua_State *L) {
+	lua_pushinteger(L, sizeof(struct pack_pannel));
+	return 1;
+}
+
 void 
 dump_pack(struct sprite_pack *pack) {
 	if (pack == NULL)
@@ -526,7 +546,7 @@ dump_pack(struct sprite_pack *pack) {
 		if (pack->type[i] == TYPE_PICTURE)
 			printf("%d : PICTURE\n", i);
 		else {
-			struct pack_animation *ani = pack->data[i];
+			struct pack_animation *ani = (struct pack_animation *)pack->data[i];
 			printf("%d : ANIMATION %d\n", i, ani->component_number);
 			int i;
 			for (i=0;i<ani->component_number;i++) {
@@ -538,7 +558,7 @@ dump_pack(struct sprite_pack *pack) {
 
 static int
 ldumppack(lua_State *L) {
-	dump_pack(lua_touserdata(L,1));
+	dump_pack((struct sprite_pack *)lua_touserdata(L, 1));
 	return 0;
 }
 
@@ -558,6 +578,7 @@ ejoy2d_spritepack(lua_State *L) {
 		{ "part_size", lpart_size },
 		{ "string_size" , lstring_size },
 		{ "label_size", llabel_size },
+		{ "pannel_size", lpannel_size },
 		{ "import", limport },
 		{ "dump", ldumppack },
 		{ NULL, NULL },
@@ -573,6 +594,8 @@ ejoy2d_spritepack(lua_State *L) {
 	lua_setfield(L, -2, "TYPE_POLYGON");
 	lua_pushinteger(L, TYPE_LABEL);
 	lua_setfield(L, -2, "TYPE_LABEL");
+	lua_pushinteger(L, TYPE_PANNEL);
+	lua_setfield(L, -2, "TYPE_PANNEL");
 
 	return 1;
 }

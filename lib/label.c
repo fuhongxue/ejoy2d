@@ -75,6 +75,9 @@ static const struct dfont_rect *
 gen_char(int unicode, const char * utf8, int size) {
 	struct font_context ctx;
 	font_create(size, &ctx);
+  if (ctx.font == NULL) {
+    return NULL;
+  }
 	font_size(utf8, unicode, &ctx);
 	const struct dfont_rect * rect = dfont_insert(Dfont, unicode, size, ctx.w,ctx.h);
 	if (rect == NULL) {
@@ -173,7 +176,6 @@ draw_utf8(int unicode, int cx, int cy, int size, const struct srt *srt, uint32_t
 void
 label_draw(const char *str, struct pack_label * l, struct srt *srt, const struct sprite_trans *arg) {
 	shader_texture(Tex);
-	shader_program(PROGRAM_TEXT, arg->additive);
 	uint32_t color;
 	if (arg->color == 0xffffffff) {
 		color = l->color;

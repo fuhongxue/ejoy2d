@@ -1,3 +1,4 @@
+
 #include "opengl.h"
 #include "ejoy2dgame.h"
 #include "fault.h"
@@ -18,11 +19,12 @@ static struct WINDOWGAME *G = NULL;
 
 static const char * startscript =
 "local path, script = ...\n"
+"require(\"ejoy2d.framework\").WorkDir = path..'/'\n"
 "assert(script, 'I need a script name')\n"
-/* "path = string.match(path,[[(.*)\\[^\\]*$]])\n" */
-"path = '.'"
-"package.path = path .. [[/?.lua;]] .. path .. [[/init.lua;./?.lua;./?/init.lua]]\n"
-"dofile(script)\n";
+"script = path..[[/]]..script\n"
+"package.path = path .. [[/?.lua;]] .. path .. [[/?/init.lua;./?.lua;./?/init.lua]]\n"
+"local f = loadfile(script)\n"
+"f(script)\n";
 
 static struct WINDOWGAME *
 create_game() {
@@ -32,20 +34,20 @@ create_game() {
 	return g;
 }
 
-static int 
+static int
 traceback(lua_State *L) {
 	const char *msg = lua_tostring(L, 1);
 	if (msg)
 		luaL_traceback(L, L, msg, 1);
 	else if (!lua_isnoneornil(L, 1)) {
-	if (!luaL_callmeta(L, 1, "__tostring")) 
+	if (!luaL_callmeta(L, 1, "__tostring"))
 		lua_pushliteral(L, "(no error message)");
 	}
 	return 1;
 }
 
 void
-ejoy2d_win_init(int argc, char *argv[]) {
+ejoy2d_win_init(int orix, int oriy, int width, int height, float scale, const char* folder) {
 	G = create_game();
 	lua_State *L = ejoy2d_game_lua(G->game);
 	lua_pushcfunction(L, traceback);
@@ -56,12 +58,10 @@ ejoy2d_win_init(int argc, char *argv[]) {
 		fault("%s", msg);
 	}
 
-	int i;
-	for (i=0;i<argc;i++) {
-		lua_pushstring(L, argv[i]);
-	}
+  lua_pushstring(L, folder);
+  lua_pushstring(L, "examples/ex03.lua");
 
-	err = lua_pcall(L, argc, 0, tb);
+	err = lua_pcall(L, 2, 0, tb);
 	if (err) {
 		const char *msg = lua_tostring(L,-1);
 		fault("%s", msg);
@@ -69,22 +69,22 @@ ejoy2d_win_init(int argc, char *argv[]) {
 
 	lua_pop(L,1);
 
-	screen_init(WIDTH,HEIGHT,1.0f);
+	screen_init(width,height,scale);
 	ejoy2d_game_start(G->game);
 }
 
-void 
+void
 ejoy2d_win_update() {
 	ejoy2d_game_update(G->game, 0.01f);
 }
 
-void 
+void
 ejoy2d_win_frame() {
 	glClear(GL_COLOR_BUFFER_BIT);
 	ejoy2d_game_drawframe(G->game);
 }
 
-void 
+void
 ejoy2d_win_touch(int x, int y,int touch) {
 	switch (touch) {
 	case TOUCH_BEGIN:

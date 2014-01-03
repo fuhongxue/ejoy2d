@@ -5,6 +5,7 @@
 #include "screen.h"
 #include "matrix.h"
 #include "label.h"
+#include "scissor.h"
 
 #include <string.h>
 #include <assert.h>
@@ -22,7 +23,6 @@ sprite_drawquad(struct pack_picture *picture, const struct srt *srt,  const stru
 	}
 	matrix_srt(&tmp, srt);
 	int *m = tmp.m;
-	shader_program(PROGRAM_PICTURE, arg->additive);
 	for (i=0;i<picture->n;i++) {
 		struct pack_quad *q = &picture->rect[i];
 		int glid = texture_glid(q->texid);
@@ -59,7 +59,6 @@ sprite_drawpolygon(struct pack_polygon *poly, const struct srt *srt, const struc
 	}
 	matrix_srt(&tmp, srt);
 	int *m = tmp.m;
-	shader_program(PROGRAM_PICTURE, arg->additive);
 	for (i=0;i<poly->n;i++) {
 		struct pack_poly *p = &poly->poly[i];
 		int glid = texture_glid(p->texid);
@@ -93,7 +92,7 @@ sprite_size(struct sprite_pack *pack, int id) {
 		return 0;
 	int type = pack->type[id];
 	if (type == TYPE_ANIMATION) {
-		struct pack_animation * ani = pack->data[id];
+		struct pack_animation * ani = (struct pack_animation *)pack->data[id];
 		return sizeof(struct sprite) + (ani->component_number - 1) * sizeof(struct sprite *);
 	} else {
 		return sizeof(struct sprite);
@@ -136,13 +135,14 @@ sprite_init(struct sprite * s, struct sprite_pack * pack, int id, int sz) {
 	s->t.mat = NULL;
 	s->t.color = 0xffffffff;
 	s->t.additive = 0;
+	s->t.program = PROGRAM_DEFAULT;
 	s->message = false;
 	s->visible = true;
 	s->name = NULL;
 	s->id = id;
 	s->type = pack->type[id];
 	if (s->type == TYPE_ANIMATION) {
-		struct pack_animation * ani = pack->data[id];
+		struct pack_animation * ani = (struct pack_animation *)pack->data[id];
 		s->s.ani = ani;
 		s->frame = 0;
 		sprite_action(s, NULL);
@@ -153,12 +153,16 @@ sprite_init(struct sprite * s, struct sprite_pack * pack, int id, int sz) {
 			s->data.children[i] = NULL;
 		}
 	} else {
-		s->s.pic = pack->data[id];
+		s->s.pic = (struct pack_picture *)pack->data[id];
 		s->start_frame = 0;
 		s->total_frame = 0;
 		s->frame = 0;
 		s->data.text = NULL;
 		assert(sz >= sizeof(struct sprite) - sizeof(struct sprite *));
+		if (s->type == TYPE_PANNEL) {
+			struct pack_pannel * pp = (struct pack_pannel *)pack->data[id];
+			s->data.scissor = pp->scissor;
+		}
 	}
 }
 
@@ -168,6 +172,7 @@ sprite_mount(struct sprite *parent, int index, struct sprite *child) {
 	struct pack_animation *ani = parent->s.ani;
 	assert(index >= 0 && index < ani->component_number);
 	parent->data.children[index] = child;
+	child->name = ani->component[index].name;
 }
 
 static int
@@ -279,37 +284,99 @@ trans_mul(struct sprite_trans *a, struct sprite_trans *b, struct sprite_trans *t
 	} else if (b->additive != 0) {
 		t->additive = color_add(t->additive, b->additive);
 	}
+	if (t->program == PROGRAM_DEFAULT) {
+		t->program = b->program;
+	}
 	return t;
 }
 
-static void 
+static void
+switch_program(struct sprite_trans *t, int def) {
+	int prog = t->program;
+	if (prog == PROGRAM_DEFAULT) {
+		prog = def;
+	}
+	shader_program(prog, t->additive);
+}
+
+static void
+set_scissor(const struct pack_pannel *p, const struct srt *srt, const struct sprite_trans *arg) {
+	struct matrix tmp;
+	if (arg->mat == NULL) {
+		matrix_identity(&tmp);
+	} else {
+		tmp = *arg->mat;
+	}
+	matrix_srt(&tmp, srt);
+	int *m = tmp.m;
+	int x[4] = { 0, p->width * SCREEN_SCALE, p->width * SCREEN_SCALE, 0 };
+	int y[4] = { 0, 0, p->height * SCREEN_SCALE, p->height * SCREEN_SCALE };
+	int minx = (x[0] * m[0] + y[0] * m[2]) / 1024 + m[4];
+	int miny = (x[0] * m[1] + y[0] * m[3]) / 1024 + m[5];
+	int maxx = minx;
+	int maxy = miny;
+	int i;
+	for (i=1;i<4;i++) {
+		int vx = (x[i] * m[0] + y[i] * m[2]) / 1024 + m[4];
+		int vy = (x[i] * m[1] + y[i] * m[3]) / 1024 + m[5];
+		if (vx<minx) {
+			minx = vx;
+		} else if (vx > maxx) {
+			maxx = vx;
+		}
+		if (vy<miny) {
+			miny = vy;
+		} else if (vy > maxy) {
+			maxy = vy;
+		}
+	}
+	minx /= SCREEN_SCALE;
+	miny /= SCREEN_SCALE;
+	maxx /= SCREEN_SCALE;
+	maxy /= SCREEN_SCALE;
+	scissor_push(minx,miny,maxx-minx,maxy-miny);
+}
+
+static int 
 draw_child(struct sprite *s, struct srt *srt, struct sprite_trans * ts) {
 	struct sprite_trans temp;
 	struct matrix temp_matrix;
 	struct sprite_trans *t = trans_mul(&s->t, ts, &temp, &temp_matrix);
 	switch (s->type) {
 	case TYPE_PICTURE:
+		switch_program(t, PROGRAM_PICTURE);
 		sprite_drawquad(s->s.pic, srt, t);
-		return;
+		return 0;
 	case TYPE_POLYGON:
+		switch_program(t, PROGRAM_PICTURE);
 		sprite_drawpolygon(s->s.poly, srt, t);
-		return;
+		return 0;
 	case TYPE_LABEL:
 		if (s->data.text) {
+			switch_program(t, PROGRAM_TEXT);
 			label_draw(s->data.text, s->s.label,srt,t);
 		}
-		return;
+		return 0;
 	case TYPE_ANIMATION:
 		break;
+	case TYPE_PANNEL:
+		if (s->data.scissor) {
+			// enable scissor
+			set_scissor(s->s.pannel, srt, t);
+			return 1;
+		} else {
+			return 0;
+		}
 	default:
 		// todo : invalid type
-		return;
+		return 0;
 	}
 	// draw animation
 	struct pack_animation *ani = s->s.ani;
 	int frame = real_frame(s) + s->start_frame;
 	struct pack_frame * pf = &ani->frame[frame];
 	int i;
+	int scissor = 0;
 	for (i=0;i<pf->n;i++) {
 		struct pack_part *pp = &pf->part[i];
 		int index = pp->component_id;
@@ -320,8 +387,12 @@ draw_child(struct sprite *s, struct srt *srt, struct sprite_trans * ts) {
 		struct sprite_trans temp2;
 		struct matrix temp_matrix2;
 		struct sprite_trans *ct = trans_mul(&pp->t, t, &temp2, &temp_matrix2);
-		draw_child(child, srt, ct);
+		scissor += draw_child(child, srt, ct);
 	}
+	for (i=0;i<scissor;i++) {
+		scissor_pop();
+	}
+	return 0;
 }
 
 void
@@ -393,7 +464,39 @@ test_label(struct pack_label *label, int x, int y) {
 	return x>=0 && x<label->width && y>=0 && y<label->height;
 }
 
+static int
+test_pannel(struct pack_pannel *pannel, int x, int y) {
+	x /= SCREEN_SCALE;
+	y /= SCREEN_SCALE;
+	return x>=0 && x<pannel->width && y>=0 && y<pannel->height;
+}
+
 static int test_child(struct sprite *s, struct srt *srt, struct sprite_trans * ts, int x, int y, struct sprite ** touch);
+
+static int
+check_child(struct sprite *s, struct srt *srt, struct sprite_trans * t, struct pack_frame * pf, int i, int x, int y, struct sprite ** touch) {
+	struct pack_part *pp = &pf->part[i];
+	int index = pp->component_id;
+	struct sprite * child = s->data.children[index];
+	if (child == NULL || !child->visible) {
+		return 0;
+	}
+	struct sprite_trans temp2;
+	struct matrix temp_matrix2;
+	struct sprite_trans *ct = trans_mul(&pp->t, t, &temp2, &temp_matrix2);
+	struct sprite *tmp = NULL;
+	int testin = test_child(child, srt, ct, x, y, &tmp);
+	if (testin) {
+		// if child capture message, return it
+		*touch = tmp;
+		return 1;
+	}
+	if (tmp) {
+		// if child not capture message, but grandson (tmp) capture it, mark it
+		*touch = tmp;
+	}
+	return 0;
+}
 
 /*
 	return 1 : test succ
@@ -404,29 +507,41 @@ test_animation(struct sprite *s, struct srt *srt, struct sprite_trans * t, int x
 	struct pack_animation *ani = s->s.ani;
 	int frame = real_frame(s) + s->start_frame;
 	struct pack_frame * pf = &ani->frame[frame];
-	int i;
-	for (i=pf->n-1;i>=0;i--) {
-		struct pack_part *pp = &pf->part[i];
-		int index = pp->component_id;
-		struct sprite * child = s->data.children[index];
-		if (child == NULL) {
-			continue;
+	int start = pf->n-1; 
+	do {
+		int scissor = -1;
+		int i;
+		// find scissor and check it first
+		for (i=start;i>=0;i--) {
+			struct pack_part *pp = &pf->part[i];
+			int index = pp->component_id;
+			struct sprite * c = s->data.children[index];
+			if (c == NULL || !c->visible) {
+				continue;
+			}
+			if (c->type == TYPE_PANNEL && c->data.scissor) {
+				scissor = i;
+				break;
+			}
+
 		}
-		struct sprite_trans temp2;
-		struct matrix temp_matrix2;
-		struct sprite_trans *ct = trans_mul(&pp->t, t, &temp2, &temp_matrix2);
-		struct sprite *tmp = NULL;
-		int testin = test_child(child, srt, ct, x, y, &tmp);
-		if (testin) {
-			// if child capture message, return it
-			*touch = child;
-			return 1;
+		if (scissor >=0) {
+			struct sprite *tmp = NULL;
+			check_child(s, srt, t, pf, scissor, x, y, &tmp);
+			if (tmp == NULL) {
+				start = scissor - 1;
+				continue;
+			}
+		} else {
+			scissor = 0;
 		}
-		if (tmp) {
-			// if child not capture message, but grandson (tmp) capture it, mark it
-			*touch = tmp;
+		for (i=start;i>=scissor;i--) {
+			int hit = check_child(s, srt, t,  pf, i, x, y, touch);
+			if (hit)
+				return 1;
 		}
-	}
+		start = scissor - 1;
+	} while(start>=0);
 	return 0;
 }
 
@@ -476,6 +591,9 @@ test_child(struct sprite *s, struct srt *srt, struct sprite_trans * ts, int x, i
 		break;
 	case TYPE_LABEL:
 		testin = test_label(s->s.label, xx, yy);
+		break;
+	case TYPE_PANNEL:
+		testin = test_pannel(s->s.pannel, xx, yy);
 		break;
 	default:
 		// todo : invalid type

@@ -1,7 +1,7 @@
 #ifndef ejoy2d_opengl_h
 #define ejoy2d_opengl_h
 
-#ifdef __APPLE__
+#if defined( __APPLE__ ) && !defined(__MACOSX)
 
 #include <OpenGLES/ES2/gl.h>
 

@@ -1,5 +1,12 @@
 local s = require "ejoy2d.shader.c"
 
+local PRECISION = "precision lowp float;\n"
+
+if OS == "LINUX" or OS == "MACOSX" then
+	-- some linux and macosx opengl driver can't compile the shader with precision
+	PRECISION = ""
+end
+
 local sprite_fs = [[
 varying vec2 v_texcoord;
 varying vec4 v_color;
@@ -37,18 +44,52 @@ varying vec4 v_color;
 uniform sampler2D texture0;
 
 void main() {
-	gl_FragColor = v_color * texture2D(texture0, v_texcoord).w;
+	float c = texture2D(texture0, v_texcoord).w;
+	gl_FragColor.xyz = v_color.xyz * c;
+	gl_FragColor.w = c;
+	gl_FragColor *= v_color.w;
+}
+]]
+
+local gray_fs = [[
+varying vec2 v_texcoord;
+varying vec4 v_color;
+uniform sampler2D texture0;
+uniform vec3 additive;
+
+void main()
+{
+	vec4 tmp = texture2D(texture0, v_texcoord);
+	vec4 c;
+	c.xyz = tmp.xyz * v_color.xyz;
+	c.w = tmp.w;
+	c *= v_color.w;
+	c.xyz += additive.xyz * tmp.w;
+	float g = dot(c.rgb , vec3(0.299, 0.587, 0.114));
+	gl_FragColor = vec4(g,g,g,c.a);
 }
 ]]
 
 local shader = {}
 
+local shader_name = {
+	NORMAL = 0,
+	TEXT = 1,
+	GRAY = 2,
+}
+
 function shader.init()
-	s.load(0, sprite_fs, sprite_vs)
-	s.load(1, text_fs, sprite_vs)
+	s.load(shader_name.NORMAL, PRECISION .. sprite_fs, PRECISION .. sprite_vs)
+	s.load(shader_name.TEXT, PRECISION .. text_fs, PRECISION .. sprite_vs)
+	s.load(shader_name.GRAY, PRECISION .. gray_fs, PRECISION .. sprite_vs)
 end
 
 shader.draw = s.draw
 shader.blend = s.blend
+
+function shader.id(name)
+	local id = assert(shader_name[name] , "Invalid shader name")
+	return id
+end
 
 return shader

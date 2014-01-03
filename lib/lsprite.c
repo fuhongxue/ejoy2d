@@ -1,6 +1,7 @@
 #include "spritepack.h"
 #include "sprite.h"
 #include "label.h"
+#include "shader.h"
 
 #include <lua.h>
 #include <lauxlib.h>
@@ -15,7 +16,7 @@
 static struct sprite *
 newlabel(lua_State *L, struct pack_label *label) {
 	int sz = sizeof(struct sprite) + sizeof(struct pack_label);
-	struct sprite *s = lua_newuserdata(L, sz);
+	struct sprite *s = (struct sprite *)lua_newuserdata(L, sz);
 	// label never has a child
 	struct pack_label * pl = (struct pack_label *)(s+1);
 	*pl = *label;
@@ -23,6 +24,7 @@ newlabel(lua_State *L, struct pack_label *label) {
 	s->t.mat = NULL;
 	s->t.color = 0xffffffff;
 	s->t.additive = 0;
+	s->t.program = PROGRAM_DEFAULT;
 	s->message = false;
 	s->visible = true;
 	s->name = NULL;
@@ -47,10 +49,10 @@ newlabel(lua_State *L, struct pack_label *label) {
 static int
 lnewlabel(lua_State *L) {
 	struct pack_label label;
-	label.width = luaL_checkinteger(L,1);
-	label.height = luaL_checkinteger(L,2);
-	label.size = luaL_checkinteger(L,3);
-	label.color = luaL_optunsigned(L,4,0xffffffff);
+	label.width = (int)luaL_checkinteger(L,1);
+	label.height = (int)luaL_checkinteger(L,2);
+	label.size = (int)luaL_checkinteger(L,3);
+	label.color = (uint32_t)luaL_optunsigned(L,4,0xffffffff);
 	const char * align = lua_tostring(L,5);
 	if (align == NULL) {
 		label.align = LABEL_ALIGN_LEFT;
@@ -91,7 +93,7 @@ newsprite(lua_State *L, struct sprite_pack *pack, int id) {
 	if (sz == 0) {
 		return NULL;
 	}
-	struct sprite * s = lua_newuserdata(L, sz);
+	struct sprite * s = (struct sprite *)lua_newuserdata(L, sz);
 	sprite_init(s, pack, id, sz);
 	int i;
 	for (i=0;;i++) {
@@ -124,11 +126,11 @@ newsprite(lua_State *L, struct sprite_pack *pack, int id) {
  */
 static int
 lnew(lua_State *L) {
-	struct sprite_pack * pack = lua_touserdata(L,1);
+	struct sprite_pack * pack = (struct sprite_pack *)lua_touserdata(L, 1);
 	if (pack == NULL) {
 		return luaL_error(L, "Need a sprite pack");
 	}
-	int id = luaL_checkinteger(L, 2);
+	int id = (int)luaL_checkinteger(L, 2);
 	struct sprite * s = newsprite(L, pack, id);
 	if (s) {
 		return 1;
@@ -147,7 +149,7 @@ readkey(lua_State *L, int idx, int key, double def) {
 
 static struct sprite *
 self(lua_State *L) {
-	struct sprite * s = lua_touserdata(L, 1);
+	struct sprite * s = (struct sprite *)lua_touserdata(L, 1);
 	if (s == NULL) {
 		luaL_error(L, "Need sprite");
 	}
@@ -166,7 +168,7 @@ lgetframe(lua_State *L) {
 static int
 lsetframe(lua_State *L) {
 	struct sprite * s = self(L);
-	int frame = luaL_checkinteger(L,2);
+	int frame = (int)luaL_checkinteger(L,2);
 	sprite_setframe(s, frame);
 	return 0;
 }
@@ -221,12 +223,33 @@ lsetmessage(lua_State *L) {
 static int
 lsetmat(lua_State *L) {
 	struct sprite *s = self(L);
-	struct matrix *m = lua_touserdata(L, 2);
+	struct matrix *m = (struct matrix *)lua_touserdata(L, 2);
 	if (m == NULL)
 		return luaL_error(L, "Need a matrix");
 	s->t.mat = &s->mat;
 	s->mat = *m;
 
+	return 0;
+}
+
+static int
+lsetprogram(lua_State *L) {
+	struct sprite *s = self(L);
+	if (lua_isnoneornil(L,2)) {
+		s->t.program = PROGRAM_DEFAULT;
+	} else {
+		s->t.program = (int)luaL_checkinteger(L,2);
+	}
+	return 0;
+}
+
+static int
+lsetscissor(lua_State *L) {
+	struct sprite *s = self(L);
+	if (s->type != TYPE_PANNEL) {
+		return luaL_error(L, "Only pannel can set scissor");
+	}
+	s->data.scissor = lua_toboolean(L,2);
 	return 0;
 }
 
@@ -319,6 +342,8 @@ lsetter(lua_State *L) {
 		{"color", lsetcolor},
 		{"additive", lsetadditive },
 		{"message", lsetmessage },
+		{"program", lsetprogram },
+		{"scissor", lsetscissor },
 		{NULL, NULL},
 	};
 	luaL_newlib(L,l);
@@ -346,7 +371,7 @@ lmount(lua_State *L) {
 		return luaL_error(L, "No child name %s", name);
 	}
 	lua_getuservalue(L, 1);
-	struct sprite * child = lua_touserdata(L, 3);
+	struct sprite * child = (struct sprite *)lua_touserdata(L, 3);
 	if (child == NULL) {
 		sprite_mount(s, index, NULL);
 		lua_pushnil(L);
@@ -374,8 +399,8 @@ fill_srt(lua_State *L, struct srt *srt, int idx) {
 		sx = readkey(L, idx, SRT_SX, 1);
 		sy = readkey(L, idx, SRT_SY, 1);
 	}
-	srt->offx = x*8;
-	srt->offy = y*8;
+	srt->offx = x*SCREEN_SCALE;
+	srt->offy = y*SCREEN_SCALE;
 	srt->scalex = sx*1024;
 	srt->scaley = sy*1024;
 	srt->rot = rot * (1024.0 / 360.0);
@@ -398,7 +423,7 @@ ldraw(lua_State *L) {
 static int
 lmulti_draw(lua_State *L) {
 	struct sprite *s = self(L);
-	int cnt = luaL_checkinteger(L,3);
+	int cnt = (int)luaL_checkinteger(L,3);
 	if (cnt == 0)
 		return 0;
 	luaL_checktype(L,4,LUA_TTABLE);
@@ -414,9 +439,9 @@ lmulti_draw(lua_State *L) {
 	for (i = 0; i < cnt; i++) {
 		lua_rawgeti(L, 4, i+1);
 		lua_rawgeti(L, 5, i+1);
-		struct matrix * mat = lua_touserdata(L, -2);
+		struct matrix * mat = (struct matrix *)lua_touserdata(L, -2);
 		s->t.mat = mat;
-		s->t.color = lua_tounsigned(L, -1);
+		s->t.color = (uint32_t)lua_tounsigned(L, -1);
 		lua_pop(L, 2);
 
 		sprite_draw(s, &srt);
@@ -453,7 +478,7 @@ lookup(lua_State *L, struct sprite *root, struct sprite *spr) {
 
 static int
 ltest(lua_State *L) {
-	struct sprite * s = lua_touserdata(L,1);
+	struct sprite * s = (struct sprite *)lua_touserdata(L, 1);
 	if (s == NULL) {
 		return luaL_error(L, "Need a sprite");
 	}
